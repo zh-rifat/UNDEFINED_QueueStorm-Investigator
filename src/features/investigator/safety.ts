@@ -104,9 +104,38 @@ export function scanText(
  * Strict, safe fallback text used when the model's draft fails a safety scan.
  * The fallback never requests credentials, never confirms refunds, and only
  * directs the customer to official support channels.
+ *
+ * Two language variants are provided so that a Bangla-input ticket whose
+ * customer_reply is rewritten by the post-processor remains in Bangla,
+ * matching the input language (SAMPLE-07 in SUST_Preli_Sample_Cases.json).
+ * The orchestrator (`analyzeTicketCore.ts`) picks the right variant based on
+ * the input `language` field.
  */
-export const SAFE_CUSTOMER_REPLY_FALLBACK =
+export const SAFE_CUSTOMER_REPLY_FALLBACK_EN =
   "Thank you for contacting us. We have logged your concern and a support agent will review your case. For your safety, please only share information through our official app or verified support channels, and never share your PIN, OTP, or password with anyone.";
+
+export const SAFE_CUSTOMER_REPLY_FALLBACK_BN =
+  "আমাদের সাথে যোগাযোগ করার জন্য ধন্যবাদ। আমরা আপনার সমস্যাটি রেকর্ড করেছি এবং একজন সাপোর্ট এজেন্ট শিঘ্রই আপনার কেস পর্যালোচনা করবেন। আপনার নিরাপত্তার জন্য, শুধুমাত্র আমাদের অফিসিয়াল অ্যাপ বা যাচাইকৃত সাপোর্ট চ্যানেলের মাধ্যমে তথ্য শেয়ার করুন এবং কারো সাথে আপনার পিন, ওটিপি বা পাসওয়ার্ড শেয়ার করবেন না।";
+
+/**
+ * @deprecated Use SAFE_CUSTOMER_REPLY_FALLBACK_EN. Kept for backward compat
+ * with any external callers that import the old constant name.
+ */
+export const SAFE_CUSTOMER_REPLY_FALLBACK = SAFE_CUSTOMER_REPLY_FALLBACK_EN;
 
 export const SAFE_NEXT_ACTION_FALLBACK =
   "Escalate to the appropriate department for human review; do not request credentials from the customer and do not confirm any refund outside of official channels.";
+
+/**
+ * Picks the right language variant of the safe customer-reply fallback.
+ * The default heuristic: any non-English language code (`bn`, `mixed`, or
+ * anything not exactly `"en"`) is treated as Bangla, because every SUST
+ * Carnival sample that uses a non-English complaint is Bangla.
+ */
+export function pickSafeCustomerReplyFallback(
+  language: string | null | undefined
+): string {
+  if (language === "en") return SAFE_CUSTOMER_REPLY_FALLBACK_EN;
+  // bn, mixed, or any other -> Bangla fallback
+  return SAFE_CUSTOMER_REPLY_FALLBACK_BN;
+}
