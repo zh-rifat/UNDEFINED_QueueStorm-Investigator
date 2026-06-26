@@ -1,33 +1,5 @@
 import "server-only";
 
-/**
- * Google Gemini provider — optional alternative to OpenRouter.
- *
- * Talks directly to the public `generativelanguage.googleapis.com`
- * `generateContent` REST endpoint with `responseMimeType: "application/json"`.
- * No SDK is used so the dependency surface stays small and the orchestrator
- * can switch providers without touching feature code.
- *
- * Multi-key rotation
- * ------------------
- * The `GEMINI_API_KEY` env var is parsed as a comma-separated list of keys
- * (whitespace around each entry is trimmed, blanks are dropped, duplicates
- * are de-duplicated while preserving first-seen order). On every call the
- * client picks the *next* key in the pool using a round-robin index cached
- * in module scope, so consecutive requests spread the load across the
- * configured keys and avoid hammering a single key into the rate limit.
- *
- * If the chosen key fails with HTTP 429 / `RESOURCE_EXHAUSTED` / a quota
- * message, the client:
- *
- *   1. Marks that key as cooling down for `GEMINI_KEY_COOLDOWN_MS`
- *      (default 60s).
- *   2. Advances the round-robin index to the next non-cooling-down key.
- *   3. Retries the same request (bounded by the pool size).
- *
- * If every key is exhausted, throws a typed `GeminiRateLimitError` so the
- * orchestrator can surface a clear `llm_failure` response.
- */
 
 import type { GenerateOptions, GenerateResult, LLMClient } from "./types";
 
@@ -40,35 +12,10 @@ const DEFAULT_TEMPERATURE = 0.2;
 const DEFAULT_KEY_COOLDOWN_MS = 60_000;
 
 let cachedBaseUrl: string | null = null;
-
-/**
- * Ordered list of Gemini API keys parsed from the comma-separated
- * `GEMINI_API_KEY` env var. Order is preserved (after trim + dedupe) so the
- * round-robin walks keys deterministically.
- */
 let cachedKeyPool: string[] | null = null;
-
-/**
- * Round-robin cursor pointing at the index of the key most recently picked
- * from the pool. Starts at `-1` so the very first call advances to index 0.
- * The value is module-scoped — within a single Node process it survives
- * across requests, giving us a per-process sticky rotation that spreads
- * load evenly. `_resetGeminiRoundRobinIndex()` resets it for tests.
- */
 let lastKeyIndex: number = -1;
-
-/**
- * Per-key cooldown bookkeeping. `keyCooldownUntil.get(apiKey)` holds the
- * epoch-ms timestamp until which the key is considered unavailable. We avoid
- * exposing the raw map outside the module; `_resetGeminiKeyCooldowns()` is the
- * only escape hatch and is intended for tests.
- */
 const keyCooldownUntil = new Map<string, number>();
 
-/**
- * Typed error so callers (the orchestrator, tests) can distinguish a
- * "every key is rate-limited" outcome from a generic upstream failure.
- */
 export class GeminiRateLimitError extends Error {
   readonly provider = "gemini";
   readonly attemptedKeys: number;
@@ -120,14 +67,6 @@ function readEnv(): { baseUrl: string; keyPool: string[] } {
   return { baseUrl, keyPool };
 }
 
-/**
- * Parse `GEMINI_API_KEY` as a comma-separated list of API keys. Whitespace
- * around each entry is trimmed, blank entries are dropped, and duplicates
- * are filtered out while preserving the first-seen order. This gives the
- * caller a stable rotation sequence.
- *
- * Example: `GEMINI_API_KEY=key-a, key-b,,key-a` → `["key-a", "key-b"]`.
- */
 function collectKeyPool(): string[] {
   const raw = process.env.GEMINI_API_KEY ?? "";
   if (!raw.trim()) return [];
@@ -144,54 +83,33 @@ function collectKeyPool(): string[] {
   return pool;
 }
 
-/**
- * Tests (and hot-reload flows) call this to force the next request to
- * re-read `process.env` and rebuild the key pool.
- */
 export function _resetGeminiEnvCache(): void {
   cachedBaseUrl = null;
   cachedKeyPool = null;
 }
 
-/**
- * Tests call this to clear in-memory cooldown timestamps without resetting
- * the key-pool cache.
- */
+
 export function _resetGeminiKeyCooldowns(): void {
   keyCooldownUntil.clear();
 }
 
-/**
- * Tests call this to reset the round-robin cursor back to its initial
- * pre-rotation state, so the next request picks index 0 again.
- */
 export function _resetGeminiRoundRobinIndex(): void {
   lastKeyIndex = -1;
 }
 
-/**
- * Advance the round-robin cursor past any keys currently cooling down and
- * return the next available key. If every key is cooling down, returns
- * `null` and the caller should surface `GeminiRateLimitError`.
- *
- * Skips past cooling-down entries instead of *picking* one and waiting, so
- * we never silently send a request to a known-bad key.
- */
+
 function pickNextAvailableKey(pool: string[]): string | null {
   if (pool.length === 0) return null;
   const now = Date.now();
   for (let step = 0; step < pool.length; step++) {
-    // Modulo so we wrap; this also handles the initial `-1` cleanly:
-    // (-1 + 1) % n === 0 on the first call.
+    // Modulo also handles the initial -1 cleanly: (-1 + 1) % n === 0.
     lastKeyIndex = (lastKeyIndex + 1) % pool.length;
     const candidate = pool[lastKeyIndex];
     const until = keyCooldownUntil.get(candidate);
     if (until !== undefined && now < until) {
-      // Key is cooling down — keep walking.
       continue;
     }
     if (until !== undefined) {
-      // Cooldown expired — clear the stale entry and pick it.
       keyCooldownUntil.delete(candidate);
     }
     return candidate;
@@ -238,37 +156,19 @@ type RateLimitSignal = {
   retryAfterMs: number | null;
 };
 
-/**
- * Inspect the raw response status + body and decide whether this attempt
- * should trigger rotation. Gemini surfaces quota exhaustion in two shapes:
- *
- *   - HTTP 429 with a JSON error envelope whose `error.code` is
- *     `RESOURCE_EXHAUSTED` or whose `status` is `UNAVAILABLE`.
- *   - A non-2xx response whose message matches `/rate limit|quota|resource
- *     exhausted/i`.
- *
- * The Google API also includes a `Retry-After` header on some 429s; we
- * surface it as a hint for the cooldown duration.
- */
 function classifyResponse(
   status: number,
   bodyText: string,
   parsedBody: unknown
 ): RateLimitSignal {
-  // HTTP 429 is the canonical "you're rate-limited" signal — always rotate.
   if (status === 429) {
     return { rateLimited: true, retryAfterMs: null };
   }
 
-  // Some Gemini endpoints return 503 when the upstream pool is saturated.
-  if (status === 503) {
-    if (looksLikeQuotaError(parsedBody, bodyText)) {
-      return { rateLimited: true, retryAfterMs: null };
-    }
+  if (status === 503 && looksLikeQuotaError(parsedBody, bodyText)) {
+    return { rateLimited: true, retryAfterMs: null };
   }
 
-  // Error envelopes (HTTP non-2xx OR 2xx-with-`error`-field) carry the
-  // RESOURCE_EXHAUSTED code or a quota-related message — those also rotate.
   if (looksLikeQuotaError(parsedBody, bodyText)) {
     return { rateLimited: true, retryAfterMs: null };
   }
@@ -277,8 +177,7 @@ function classifyResponse(
 }
 
 function looksLikeQuotaError(parsedBody: unknown, bodyText: string): boolean {
-  // The body is sometimes plain-text on 4xx responses, so we look at both
-  // the structured envelope and the raw text.
+  
   if (parsedBody && typeof parsedBody === "object") {
     const env = parsedBody as {
       error?: { code?: number | string; status?: string; message?: string };
@@ -373,7 +272,7 @@ async function attemptRequest(
   try {
     parsedBody = bodyText.length > 0 ? JSON.parse(bodyText) : null;
   } catch {
-    // Leave parsedBody as null; callers will fall back to the raw text.
+    // Callers fall back to the raw text when parsedBody is null.
   }
 
   return {
@@ -474,15 +373,14 @@ export const geminiClient: LLMClient = {
     const timeoutMs = getTimeoutMs();
     const body = buildRequestBody(options);
 
-    // Round-robin: pick the next available key once per request. If that
-    // key 429s, mark it cooling-down, advance the cursor, and retry. We
-    // bound retries by the pool size so we never spin forever even if every
-    // key is bad.
+    // Round-robin across the key pool, bounded by pool size so a poison
+    // key can't spin forever. On 429/quota we mark the key cooling-down
+    // and let pickNextAvailableKey skip it on the next iteration.
     let lastAttempt: RawAttempt | null = null;
 
     for (let step = 0; step < keyPool.length; step++) {
       const apiKey = pickNextAvailableKey(keyPool);
-      if (!apiKey) break; // every key is cooling down → bail out below
+      if (!apiKey) break;
 
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -499,8 +397,8 @@ export const geminiClient: LLMClient = {
         );
       } catch (err) {
         clearTimeout(timer);
-        // Network/timeout errors aren't rate-limit signals — surface them
-        // immediately rather than burning the next key.
+        // Network/timeout failures are not rate-limit signals — surfacing
+        // them immediately avoids burning healthy keys on a dead network.
         throw err;
       }
       clearTimeout(timer);
@@ -524,7 +422,6 @@ export const geminiClient: LLMClient = {
         return parseSuccessPayload(model, attempt.bodyText, attempt.parsedBody);
       }
 
-      // Non-2xx — decide whether to rotate.
       const signal = classifyResponse(
         attempt.status,
         attempt.bodyText,
@@ -533,12 +430,9 @@ export const geminiClient: LLMClient = {
 
       if (signal.rateLimited) {
         markKeyCoolingDown(apiKey, signal.retryAfterMs);
-        // Loop continues — pickNextAvailableKey will skip the cooling-down
-        // key and advance to the next pool entry on the next iteration.
         continue;
       }
 
-      // Non-rate-limit failure — surface it as-is.
       throw new Error(
         `Gemini returned ${attempt.status} ${attempt.statusText} for model=${model}: ${attempt.bodyText.slice(
           0,
@@ -547,8 +441,6 @@ export const geminiClient: LLMClient = {
       );
     }
 
-    // Every key was either rate-limited or otherwise unavailable. Surface
-    // a typed error so the orchestrator can decide on the response shape.
     throw new GeminiRateLimitError({
       attemptedKeys: keyPool.length,
       lastStatus: lastAttempt?.status ?? null,

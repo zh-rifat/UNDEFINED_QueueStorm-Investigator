@@ -1,13 +1,4 @@
 import "server-only";
-
-/**
- * OpenRouter provider — default for the QueueStorm Investigator.
- *
- * Talks to the OpenAI-compatible `/api/v1/chat/completions` endpoint with a
- * Bearer token. No SDK is used — a raw `fetch` keeps the dependency surface
- * minimal and avoids pulling in a provider-specific package.
- */
-
 import type { GenerateOptions, GenerateResult, LLMClient } from "./types";
 
 const DEFAULT_BASE_URL = "https://openrouter.ai/api/v1";
@@ -37,7 +28,7 @@ function readEnv(): { baseUrl: string; apiKey: string } {
   return { baseUrl, apiKey };
 }
 
-/** Reset the cached env values — exposed for tests that mutate `process.env`. */
+/** Reset the cached env values (tests that mutate `process.env`). */
 export function _resetOpenRouterEnvCache() {
   cachedBaseUrl = null;
   cachedApiKey = null;
@@ -65,8 +56,6 @@ function getTimeoutMs(): number {
   const raw = process.env.OPENROUTER_TIMEOUT_MS;
   if (!raw) return DEFAULT_TIMEOUT_MS;
   const parsed = Number.parseInt(raw, 10);
-  // Clamp to a sane range so a typo (0 / NaN / huge value) can't freeze the
-  // request handler or fire instantly. Floor at 1s, ceiling at 5min.
   if (!Number.isFinite(parsed) || parsed < 1_000) return DEFAULT_TIMEOUT_MS;
   return Math.min(parsed, 300_000);
 }
@@ -88,9 +77,6 @@ export const openrouterClient: LLMClient = {
     try {
       response = await fetch(`${baseUrl}/chat/completions`, {
         method: "POST",
-        // Stream must be explicitly disabled — some OpenRouter gateways default
-        // to streaming for free models, which would hang on `.text()` if the
-        // SSE channel stays open without a terminating `data: [DONE]`.
         cache: "no-store",
         headers: {
           Authorization: `Bearer ${apiKey}`,
@@ -112,8 +98,6 @@ export const openrouterClient: LLMClient = {
           temperature: getTemperature(),
           max_tokens: getMaxTokens(),
           stream: false,
-          // The free Nemotron model is non-deterministic; small `top_p` keeps
-          // it focused on JSON output without collapsing creativity entirely.
           top_p: 0.8,
         }),
         signal: controller.signal,
@@ -132,8 +116,6 @@ export const openrouterClient: LLMClient = {
       );
     }
 
-    // Read the body under the same AbortController so a slow upstream that
-    // streams headers but never finishes the body is also cut by the timeout.
     let responseText: string;
     try {
       responseText = await response.text();
@@ -184,9 +166,7 @@ export const openrouterClient: LLMClient = {
         completion_tokens?: number;
         total_tokens?: number;
       };
-      // OpenRouter can return a 2xx response whose body is an error envelope
-      // when the upstream provider (here: NVIDIA Nemotron) is overloaded or
-      // rate-limited.
+      
       error?: { message?: string; code?: number | string; type?: string };
     };
 

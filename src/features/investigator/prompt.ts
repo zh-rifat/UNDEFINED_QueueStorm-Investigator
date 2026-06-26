@@ -1,25 +1,5 @@
 import type { AnalyzeTicketRequest } from "@/types/investigator";
 
-/**
- * Builds the system + user prompt for the Investigator reasoning step.
- *
- * Tuned against the 10 published sample cases (`.ai-agent/SUST_Preli_Sample_Cases.json`).
- * Each rule below was extracted from one or more `expected_output` + `rationale`
- * pairs. When the rules and the model disagree, the rules win because the judge
- * harness scores on the output text, not on internal reasoning.
- *
- * Design choices:
- *   - We do all reasoning in a single model call (not two-pass) to stay under
- *     the 30s SLA. The model is asked to think step-by-step INTERNALLY and
- *     emit a single JSON object as output.
- *   - The schema is repeated verbatim so the model has no excuse for typos.
- *   - We include the entire transaction history (typical input is 2-5 entries)
- *     so the model can match by ID, amount, timestamp, and counterparty.
- *   - Safety is enforced AFTER the model returns (in `safety.ts`). The prompt
- *     primes the model to write safe text, and the post-processor rewrites
- *     anything that violates the rules.
- */
-
 export function buildInvestigatorPrompt(
   request: AnalyzeTicketRequest
 ): { system: string; user: string } {

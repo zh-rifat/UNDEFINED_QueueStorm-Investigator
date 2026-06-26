@@ -10,30 +10,6 @@ import {
   type Severity,
 } from "@/types/investigator";
 
-/**
- * Robust JSON parser for the model output.
- *
- * Gemini is configured with `responseMimeType: "application/json"` but the
- * model can still produce output that fails strict JSON.parse for several
- * reasons we have observed in production:
- *   - Markdown ```json fences around the object.
- *   - A short preamble or trailing commentary.
- *   - An unescaped double quote inside a string value, which produces the
- *     classic "Unterminated string in JSON at position N" error.
- *   - Truncation when the response hits the token budget mid-string.
- *
- * The parser therefore escalates through FIVE strategies:
- *   1. JSON.parse the raw text.
- *   2. Strip ```json fences and retry.
- *   3. Extract the first {...} block and retry.
- *   4. Walk the string once and escape every internal `"` that is not a JSON
- *      structural quote (followed by `,`, `}`, `]`, `:`, or whitespace +
- *      one of those). This salvages "Unterminated string" outputs.
- *   5. Field-by-field salvage: scan the text for every `"<key>":` token and
- *      extract each value independently using a delimiter-aware scanner. This
- *      is the last line of defence — even if the overall object is corrupt,
- *      any field that was emitted cleanly survives.
- */
 
 export type ParseResult =
   | { ok: true; value: Record<string, unknown> }
@@ -42,11 +18,9 @@ export type ParseResult =
 export function parseModelJson(raw: string): ParseResult {
   const trimmed = raw.trim();
 
-  // Strategy 1: direct parse.
   const direct = tryParse(trimmed);
   if (direct.ok) return direct;
 
-  // Strategy 2: strip ```json fences.
   const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (fenceMatch) {
     const fenced = fenceMatch[1].trim();
@@ -54,7 +28,6 @@ export function parseModelJson(raw: string): ParseResult {
     if (attempt.ok) return attempt;
   }
 
-  // Strategy 3: extract first {...} block.
   const firstBrace = trimmed.indexOf("{");
   const lastBrace = trimmed.lastIndexOf("}");
   if (firstBrace !== -1 && lastBrace > firstBrace) {
@@ -63,19 +36,12 @@ export function parseModelJson(raw: string): ParseResult {
     if (attempt.ok) return attempt;
   }
 
-  // Strategy 4: escape unescaped internal quotes inside string values.
-  // We walk character by character, tracking whether we are inside a JSON
-  // string. If we see `"` while inside a string and it is NOT followed by a
-  // structural delimiter (`,`, `}`, `]`, `:` — possibly with whitespace), we
-  // treat it as an embedded quote and escape it.
   const repaired = repairUnterminatedStrings(trimmed);
   if (repaired) {
     const attempt = tryParse(repaired);
     if (attempt.ok) return attempt;
   }
 
-  // Strategy 5: field-by-field salvage. Parse each top-level field
-  // independently so one broken field cannot poison the whole response.
   const salvaged = salvageFields(trimmed);
   if (salvaged && Object.keys(salvaged).length > 0) {
     return { ok: true, value: salvaged };
@@ -394,7 +360,6 @@ function peekNonWhitespace(text: string, from: number): string {
   while (i < text.length && /\s/.test(text[i])) i++;
   return text[i] ?? "";
 }
-// ---------- Coercion helpers ----------
 
 function clamp(value: unknown, fallback: number, min = 0, max = 1): number {
   if (typeof value !== "number" || Number.isNaN(value)) return fallback;

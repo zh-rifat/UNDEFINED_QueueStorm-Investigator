@@ -1,16 +1,3 @@
-/**
- * Pure orchestrator logic for analyzing a support ticket.
- *
- * This is the same code path as `analyzeTicketAction` (the `server-only`
- * action exported from `./analyzeTicket.ts`), minus the `server-only` guard.
- * It exists so test runners and other Node-only entry points can exercise
- * the full prompt -> model -> parse -> normalize -> safety pipeline without
- * triggering the Next.js `server-only` module guard.
- *
- * The `server-only` action is a thin wrapper around this function and
- * delegates immediately to `runAnalyzeTicketCore`.
- */
-
 import { getLLMClient } from "@/server/llm";
 import { buildInvestigatorPrompt } from "@/features/investigator/prompt";
 import {
@@ -44,7 +31,6 @@ export class AnalyzeTicketError extends Error {
 export async function runAnalyzeTicketCore(
   request: AnalyzeTicketRequest
 ): Promise<AnalyzeTicketResponse> {
-  // ---------- 1. Light input validation ----------
   if (!request || typeof request !== "object") {
     throw new AnalyzeTicketError(
       "Request body must be a JSON object",
@@ -61,15 +47,13 @@ export async function runAnalyzeTicketCore(
     throw new AnalyzeTicketError("complaint cannot be empty", "empty_complaint");
   }
 
-  // ---------- 2. Build prompt + call the model ----------
   const { system, user } = buildInvestigatorPrompt(request);
 
+  // Provider selection (openrouter / gemini) is owned by `src/server/llm`.
+  // The Gemini client does round-robin rotation across the comma-separated
+  // GEMINI_API_KEY pool so consecutive requests spread load across keys.
   let rawText: string;
   try {
-    // Provider selection (openrouter / gemini) is owned by `src/server/llm`.
-    // The Gemini client in particular does round-robin rotation across the
-    // comma-separated `GEMINI_API_KEY` pool, so consecutive requests spread
-    // load across configured keys instead of hammering one.
     const client = getLLMClient();
     const result = await client.generateInvestigatorCompletion({ system, user });
     rawText = result.rawText;
@@ -82,7 +66,6 @@ export async function runAnalyzeTicketCore(
     );
   }
 
-  // ---------- 3. Parse + normalize the model output ----------
   const parsed = parseModelJson(rawText);
   if (!parsed.ok) {
     throw new AnalyzeTicketError(
@@ -96,7 +79,6 @@ export async function runAnalyzeTicketCore(
     parsed.value
   );
 
-  // ---------- 4. Safety post-processing ----------
   const replyFlags = scanText("customer_reply", normalized.customer_reply);
   const actionFlags = scanText(
     "recommended_next_action",
@@ -106,8 +88,8 @@ export async function runAnalyzeTicketCore(
 
   if (allFlags.length > 0) {
     // Always rewrite unsafe text to the strict fallback — never trust the draft.
-    // Pick the localized fallback that matches the input language, so a
-    // Bangla complaint stays in Bangla even after a safety rewrite.
+    // pickSafeCustomerReplyFallback preserves the input language so a Bangla
+    // complaint stays in Bangla after a safety rewrite.
     normalized.customer_reply = pickSafeCustomerReplyFallback(
       request.language
     );
@@ -115,7 +97,6 @@ export async function runAnalyzeTicketCore(
     normalized.human_review_required = true;
   }
 
-  // Strip the internal counter from the wire response.
   const { safetyFlags: _ignored, ...response } = normalized;
   void _ignored;
 

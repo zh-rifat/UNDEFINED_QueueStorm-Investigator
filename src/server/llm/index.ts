@@ -37,17 +37,12 @@ function normalizeProviderName(raw: string | undefined): ProviderName | null {
   return null;
 }
 
-/**
- * Resolve which provider to use. Order:
- *   1. Explicit in-process override (set via `setLLMProvider`).
- *   2. `LLM_PROVIDER` env var.
- *   3. Default to OpenRouter.
- */
+
 export function resolveProviderName(): ProviderName {
   if (runtimeOverride) return runtimeOverride;
   const fromEnv = normalizeProviderName(process.env.LLM_PROVIDER);
   if (fromEnv) return fromEnv;
-  return "openrouter";
+  return "gemini";
 }
 
 export function getLLMClient(): LLMClient {
@@ -61,10 +56,6 @@ export function getLLMClient(): LLMClient {
   return client;
 }
 
-/**
- * Pin the active provider from code (bypassing `LLM_PROVIDER`).
- * Pass `null` to revert to env-driven resolution. Primarily used by tests.
- */
 export function setLLMProvider(provider: ProviderName | null): void {
   runtimeOverride = provider;
 }

@@ -1,18 +1,3 @@
-/**
- * Safety guardrails (Section 8 of the problem statement).
- *
- * Three automated checks enforced here:
- *   1. Never request PIN / OTP / password / full card number.
- *   2. Never confirm a refund, reversal, account unblock, or recovery.
- *   3. Never instruct the customer to contact a suspicious third party.
- *
- * The checks run over BOTH `customer_reply` AND `recommended_next_action`
- * because either field can leak the same dangerous language.
- *
- * When the judge harness flags violations we subtract from the safety score,
- * so the goal is to make these checks tight and deterministic rather than
- * relying on prompt-level niceness.
- */
 
 const CREDENTIAL_PATTERNS: { label: string; pattern: RegExp }[] = [
   { label: "PIN request", pattern: /\b(pin|personal\s+identification\s+number)\b/i },

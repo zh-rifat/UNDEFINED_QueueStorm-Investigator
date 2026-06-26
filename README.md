@@ -42,9 +42,36 @@ npm run start
 
 | Variable        | Required | Default              | Notes                                  |
 | --------------- | -------- | -------------------- | -------------------------------------- |
-| `GEMINI_API_KEY` | yes      | —                    | Comma-separated list of Google AI Studio keys. The client round-robins through them and falls back to the next key on 429. |
+| `LLM_PROVIDER`   | no       | `gemini`             | `gemini` (default, multi-key rotation) or `openrouter`. Aliases: `google`, `google-gemini` → `gemini`; `or` → `openrouter`. |
+| `GEMINI_API_KEY` | yes (when `LLM_PROVIDER=gemini`) | —   | Comma-separated list of Google AI Studio keys. The client round-robins through them and falls back to the next key on 429. |
 | `GEMINI_MODEL`   | no       | `gemini-2.5-flash`   | Override to a different Gemini model.  |
 | `GEMINI_KEY_COOLDOWN_MS` | no | `60000`              | How long a rate-limited key stays out of rotation (ms). |
+| `OPENROUTER_API_KEY` | yes (when `LLM_PROVIDER=openrouter`) | — | Single OpenRouter key. No rotation. |
+| `OPENROUTER_MODEL` | no    | `google/gemini-2.5-flash` | Override to any OpenRouter model id. |
+
+### Gemini key pool rotation
+
+When `LLM_PROVIDER=gemini` (the default), the client treats `GEMINI_API_KEY` as
+a **pool** rather than a single credential:
+
+1. **Parsing.** `GEMINI_API_KEY` is split on commas; each entry is trimmed,
+   blanks are dropped, and duplicates are removed while preserving the
+   first-seen order.
+2. **Round-robin.** A module-scoped cursor (`lastKeyIndex`) walks the pool on
+   every call, so consecutive requests spread across keys instead of hammering
+   the first one.
+3. **Rate-limit detection.** On HTTP 429, `RESOURCE_EXHAUSTED`, or a
+   quota-shaped message, the offending key is marked cooling-down for
+   `GEMINI_KEY_COOLDOWN_MS` (default 60s, capped at 10 min) and the loop
+   advances to the next non-cooling-down key.
+4. **Bounded retries.** The retry loop is bounded by `keyPool.length`, so a
+   poisoned key can never spin forever — once every key has been tried,
+   the client throws a typed `GeminiRateLimitError` which the orchestrator
+   surfaces as `llm_failure`.
+
+Concrete example: with three keys configured and key #2 hitting 429, the
+client serves the next request from key #3, and key #2 re-enters the rotation
+once its cooldown expires.
 
 ---
 
