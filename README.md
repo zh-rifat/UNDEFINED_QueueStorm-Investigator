@@ -10,8 +10,11 @@ The service exposes two HTTP endpoints:
 | GET    | `/api/health`         | Liveness probe; returns `{"status":"ok"}`.                    |
 | POST   | `/api/analyze-ticket` | Classify, route, and draft a safe reply for one support case. |
 
-The full request/response schema, enums, and safety rules are defined by the
-published problem statement (`SUST_Hackathon_Preli_Problem_Statement.pdf`).
+**Live demo:** <https://undefined-queue-storm-investigator.vercel.app/>
+
+- Health probe: <https://undefined-queue-storm-investigator.vercel.app/api/health>
+- Analyze endpoint: `POST https://undefined-queue-storm-investigator.vercel.app/api/analyze-ticket`
+
 
 ---
 
