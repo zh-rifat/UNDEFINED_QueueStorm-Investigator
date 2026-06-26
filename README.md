@@ -42,8 +42,9 @@ npm run start
 
 | Variable        | Required | Default              | Notes                                  |
 | --------------- | -------- | -------------------- | -------------------------------------- |
-| `GEMINI_API_KEY` | yes      | —                    | Google AI Studio key.                  |
+| `GEMINI_API_KEY` | yes      | —                    | Comma-separated list of Google AI Studio keys. The client round-robins through them and falls back to the next key on 429. |
 | `GEMINI_MODEL`   | no       | `gemini-2.5-flash`   | Override to a different Gemini model.  |
+| `GEMINI_KEY_COOLDOWN_MS` | no | `60000`              | How long a rate-limited key stays out of rotation (ms). |
 
 ---
 
@@ -173,7 +174,7 @@ src/
 │   ├── layout.tsx
 │   └── page.tsx                     # Landing page (links to both endpoints)
 ├── server/                          # Server-only modules
-│   ├── gemini.ts                    # Singleton Gemini client + model config
+│   ├── llm/                         # LLM provider clients + selector (OpenRouter / Gemini)
 │   └── actions/
 │       └── analyzeTicket.ts         # Orchestrator action
 ├── features/

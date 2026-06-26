@@ -11,7 +11,7 @@
  * delegates immediately to `runAnalyzeTicketCore`.
  */
 
-import { getGenerativeModel } from "@/server/gemini";
+import { getLLMClient } from "@/server/llm";
 import { buildInvestigatorPrompt } from "@/features/investigator/prompt";
 import {
   normalizeModelOutput,
@@ -66,12 +66,13 @@ export async function runAnalyzeTicketCore(
 
   let rawText: string;
   try {
-    const model = getGenerativeModel();
-    const result = await model.generateContent({
-      systemInstruction: { role: "system", parts: [{ text: system }] },
-      contents: [{ role: "user", parts: [{ text: user }] }],
-    });
-    rawText = result.response.text();
+    // Provider selection (openrouter / gemini) is owned by `src/server/llm`.
+    // The Gemini client in particular does round-robin rotation across the
+    // comma-separated `GEMINI_API_KEY` pool, so consecutive requests spread
+    // load across configured keys instead of hammering one.
+    const client = getLLMClient();
+    const result = await client.generateInvestigatorCompletion({ system, user });
+    rawText = result.rawText;
   } catch (err) {
     throw new AnalyzeTicketError(
       `LLM call failed: ${
